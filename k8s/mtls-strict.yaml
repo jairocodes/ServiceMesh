@@ -1,0 +1,9 @@
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: servicemesh
+spec: 
+  mtls:
+    mode: STRICT # rechaza todo tráfico HTTP plano - solo mTLS
+    
