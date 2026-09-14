@@ -128,8 +128,26 @@ puramente locales (no se suben al repositorio).
   adicional, para poder distinguir visualmente qué versión responde) y
   `k8s/usuarios-v2-deployment.yaml`.
 - El `VirtualService` se actualizó a dos destinos con pesos `90`/`10`.
-- Ver la sección de incidentes (§7) para el detalle completo de la investigación de por qué
+- Ver la sección de incidentes (§6.4) para el detalle completo de la investigación de por qué
   el canary parecía no funcionar, y qué era en realidad.
+
+### Fase circuit-breaker — connectionPool + outlierDetection
+- `k8s/productos-destination-rule.yaml`: `connectionPool` (`maxConnections: 100`,
+  `http1MaxPendingRequests: 50`, `maxRequestsPerConnection: 10`) + `outlierDetection`
+  (`consecutiveGatewayErrors: 5`, `interval: 30s`, `baseEjectionTime: 30s`,
+  `maxEjectionPercent: 50`) sobre `productos-service` (sin `subsets`, aplica a todas las
+  réplicas por igual).
+- Generador de carga: se instaló `hey` (`go install github.com/rakyll/hey@latest`), pero se
+  usó dentro del mesh vía una imagen Docker propia (`hey-image/Dockerfile`, build multi-stage
+  con Go 1.24) en vez del binario nativo de Windows — porque `hey` corriendo en el host no
+  puede completar el handshake mTLS que exige el `PeerAuthentication` STRICT del namespace, y
+  no existe un Ingress Gateway configurado en este proyecto para exponer los servicios
+  externamente.
+- Verificación real: en vez de simular el fallo matando el proceso de la app (ver §6.6 sobre
+  por qué eso no demuestra el `outlierDetection` específicamente), se saturó el
+  `connectionPool` con concurrencia alta (`hey -c 500`), confirmando el circuit breaker por su
+  efecto medible: latencias de hasta ~20s y timeouts reales del lado del cliente, frente a
+  <0.7s en condiciones normales.
 
 ## 6. Incidentes y su resolución (postmortems)
 
@@ -209,11 +227,44 @@ PowerShell nativo:
   administración de Envoy desde dentro del propio sidecar hay que usar
   `pilot-agent request GET stats` en su lugar.
 
-## 7. Estado actual (última actualización: fase canary)
+### 6.6 — Circuit breaker: `kill 1` no demuestra `outlierDetection` (demuestra otra cosa)
+**Síntoma:** matar el proceso principal (`kill 1`) de una réplica de `productos-v1` y generar
+carga con `hey` inmediatamente después no producía ningún error visible — 100% de las
+respuestas seguían siendo `200`, incluso con la réplica cayéndose y reiniciando.
+**Causa (no es un bug, es un malentendido conceptual):** cuando un contenedor crashea y se
+reinicia, el Pod deja de estar `Ready` (pasa de `2/2` a `1/2`) — y **Kubernetes, por sí solo**,
+saca automáticamente ese Pod de los `Endpoints` del `Service` mientras no esté `Ready`. El
+tráfico nunca llega a la réplica caída porque Kubernetes ya la evitó, *antes* de que Istio
+tuviera oportunidad de intervenir. El `outlierDetection` de Istio resuelve un problema
+distinto: una réplica que sigue **pasando el healthcheck de Kubernetes** (sigue `Ready`,
+`2/2`) pero que empieza a devolver errores HTTP 5xx bajo ciertas condiciones — un fallo a
+nivel de aplicación que Kubernetes no puede detectar por sí solo, porque su noción de "salud"
+es binaria (el proceso responde o no) y muy básica.
+**Cómo se verificó en su lugar:** ya que los servicios FastAPI de este proyecto siempre
+devuelven `200` (no tienen ninguna ruta que falle a propósito), se optó por demostrar la otra
+mitad del `DestinationRule` — el `connectionPool` — saturándolo con concurrencia alta
+(`hey -c 500` contra un pool de 100 conexiones + 50 pendientes por réplica), lo cual sí generó
+un efecto medible y real (latencias de hasta ~20s, timeouts del cliente) sin depender de que
+la aplicación tuviera un modo de fallo simulado.
+**Lección:** al diseñar una prueba de resiliencia, hay que verificar primero *qué capa* del
+stack va a reaccionar primero ante el tipo de fallo elegido — Kubernetes (readiness/Endpoints)
+e Istio (`outlierDetection`, `connectionPool`) actúan en momentos y ante condiciones distintas,
+y es fácil "demostrar" sin querer el mecanismo equivocado.
+
+### 6.7 — `pilot-agent request GET stats` no expone todas las métricas de Envoy
+Se intentó confirmar el circuit breaker viendo el contador nativo de Envoy
+`upstream_rq_pending_overflow` para el cluster de `productos-service`, pero no aparece en la
+salida de `pilot-agent request GET stats` — Istio filtra agresivamente qué métricas de Envoy
+expone por defecto (solo se ven las métricas custom `istiocustom.istio_requests_total` y
+similares), para reducir el overhead de memoria/cardinalidad. Revertir esto requeriría tocar
+`meshConfig.defaultConfig.proxyStatsMatcher`, fuera del alcance de este proyecto. La evidencia
+de comportamiento (latencia y timeouts bajo carga, ver §6.6) fue suficiente para dar por
+verificada la fase sin ese contador específico.
+
+## 7. Estado actual (última actualización: fase circuit-breaker)
 
 - Completadas y verificadas funcionando: servicios-base, mTLS estricto, traffic routing,
-  canary deployment (90/10).
-- Pendientes: circuit breaker (Fase 6, `outlierDetection` en `productos-destination-rule`),
-  Kiali dashboard (Fase 7).
-- Herramienta `hey` (generador de carga) aún no instalada — se necesitará para las pruebas de
-  circuit breaker.
+  canary deployment (90/10), circuit breaker (connectionPool + outlierDetection).
+- Pendiente: Kiali dashboard (Fase 7, la última).
+- Herramienta `hey` instalada (vía Go) y empaquetada como imagen propia en `hey-image/` para
+  uso dentro del mesh (ver §5, fase circuit-breaker, y §6.6).

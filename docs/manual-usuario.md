@@ -141,7 +141,41 @@ kubectl delete pod test-canary -n servicemesh
 Remove-Item canary_check.txt
 ```
 
-## 10. Solución de problemas comunes
+## 10. Circuit breaker (connectionPool + outlierDetection)
+
+```powershell
+kubectl apply -f k8s/productos-destination-rule.yaml
+kubectl get destinationrule -n servicemesh
+```
+
+`hey` (el generador de carga) no puede correr desde tu Windows nativo contra estos servicios
+— exigen mTLS estricto, y `hey` no sabe hacer ese handshake. Se usa empaquetado en una imagen
+propia, dentro del mesh:
+
+```powershell
+# Construye la imagen de hey dentro del daemon de minikube
+minikube docker-env | Invoke-Expression
+docker build -t hey:local .\hey-image
+
+# Pod de prueba (arranca con sleep, para esperar a que el sidecar esté listo antes de usar hey)
+kubectl run hey-test --image=hey:local --restart=Never -n servicemesh --command -- sleep 3600
+kubectl wait --for=condition=Ready pod/hey-test -n servicemesh --timeout=30s
+
+# Carga alta para saturar el connectionPool (100 conexiones + 50 pendientes por réplica)
+kubectl exec -n servicemesh hey-test -- hey -n 3000 -c 500 -m POST "http://pedidos-service/orders?user_id=1&product_id=1"
+
+kubectl delete pod hey-test -n servicemesh
+```
+
+**Qué esperar:** con concurrencia alta deberías ver la latencia dispararse (varios segundos,
+frente a <0.7s en condiciones normales) e incluso algún timeout del lado del cliente — es el
+`connectionPool` limitando el throughput real. **No** uses `kubectl exec ... -- sh -c "kill 1"`
+para "simular un fallo" esperando ver el circuit breaker: Kubernetes saca la réplica caída del
+`Service` por su cuenta (via readiness) antes de que Istio tenga oportunidad de reaccionar —
+ver `docs/manual-tecnico.md` §6.6 para el detalle completo de por qué esa prueba no demuestra
+lo que parece demostrar.
+
+## 11. Solución de problemas comunes
 
 | Síntoma | Causa | Solución |
 |---|---|---|
@@ -151,9 +185,9 @@ Remove-Item canary_check.txt
 | `kubectl exec -c istio-proxy -- curl ...` falla ("not found") | La imagen `proxyv2` no incluye `curl` | Usar `pilot-agent request GET stats` en su lugar |
 | Un `VirtualService`/`DestinationRule` editado no cambia el comportamiento | Se editó el archivo local pero no se volvió a correr `kubectl apply` | Siempre confirmar con `kubectl get <recurso> -o yaml` que el cluster refleja el archivo local |
 | El canary "no reparte tráfico" pero toda la config se ve bien | Puede que la imagen desplegada no sea la que se cree (build desde la carpeta equivocada, cache viejo, etc.) | `kubectl exec ... -- cat <archivo>` dentro del Pod real para confirmar el código desplegado |
+| Un pod con `--command -- sleep N` deja de responder tras un rato | El `sleep` expiró (pod `NotReady`, no reinicia con `--restart=Never`) | Bórralo (`kubectl delete pod`) y créalo de nuevo |
+| `kubectl exec ... -- kill 1` falla con "executable file not found" | La imagen base no tiene un binario `kill` independiente | Pasarlo por una shell: `sh -c "kill 1"` |
 
-## 11. Pendiente (próximas fases)
+## 12. Pendiente (próximas fases)
 
-- **Circuit breaker** (`outlierDetection` en `productos-destination-rule.yaml`) — requiere
-  instalar `hey` como generador de carga.
-- **Kiali dashboard** — visualización del grafo de tráfico del mesh.
+- **Kiali dashboard** — visualización del grafo de tráfico del mesh (última fase).
