@@ -1,0 +1,21 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: productos-destination
+  namespace: servicemesh
+spec:
+  host: productos-service
+  trafficPolicy:
+    #Limitamos el pool de conexiones TCP/HTTP
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        http1MaxPendingRequests: 50
+        maxRequestsPerConnection: 10
+    # Expulsión de instancias unhealthy (el circuit breaker real)
+    outlierDetection:
+      consecutiveGatewayErrors: 5 # 5 errores 502/503/504 seguidos
+      interval: 30s # ventana de evaluación
+      baseEjectionTime: 30s # tiempo de expulsión inicial
+      maxEjectionPercent: 50 # máximo 50% de instancias expulsadas
