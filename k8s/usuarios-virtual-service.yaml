@@ -11,9 +11,12 @@ spec:
     - destination:
         host: usuarios-service
         subset: v1
-      weight: 100 #100% del tráfico a v1
-    #Timeouts y retries automáticos
-    timeout: 5s
+      weight: 90 #90% para usuarios-service v1
+    - destination:
+        host: usuarios-service
+        subset: v2
+      weight: 10 #10% para usuarios-service v2
+    timeout: 5s #Timeouts y retries automáticos
     retries:
       attempts: 3
       perTryTimeout: 2s
