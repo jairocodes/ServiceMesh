@@ -187,7 +187,33 @@ lo que parece demostrar.
 | El canary "no reparte tráfico" pero toda la config se ve bien | Puede que la imagen desplegada no sea la que se cree (build desde la carpeta equivocada, cache viejo, etc.) | `kubectl exec ... -- cat <archivo>` dentro del Pod real para confirmar el código desplegado |
 | Un pod con `--command -- sleep N` deja de responder tras un rato | El `sleep` expiró (pod `NotReady`, no reinicia con `--restart=Never`) | Bórralo (`kubectl delete pod`) y créalo de nuevo |
 | `kubectl exec ... -- kill 1` falla con "executable file not found" | La imagen base no tiene un binario `kill` independiente | Pasarlo por una shell: `sh -c "kill 1"` |
+| El grafo de Kiali muestra los nodos pero sin flechas de tráfico entre ellos | El selector de rango de tiempo (arriba a la derecha) no cubre el momento en que se generó carga | Amplía el rango (ej. "Last 5m") y genera tráfico fresco mientras miras el grafo |
 
-## 12. Pendiente (próximas fases)
+## 12. Kiali — visualizar el grafo del mesh
 
-- **Kiali dashboard** — visualización del grafo de tráfico del mesh (última fase).
+```powershell
+# Confirma que Kiali está corriendo (viene con los addons de la Fase 1)
+kubectl get pods -n istio-system | Select-String "kiali"
+
+# Abre el dashboard (bloquea esta terminal, abre el navegador en localhost:20001)
+istioctl dashboard kiali
+```
+
+En una **segunda terminal**, genera tráfico mientras miras el navegador:
+```powershell
+kubectl run hey-test --image=hey:local --restart=Never -n servicemesh --command -- sleep 3600
+kubectl wait --for=condition=Ready pod/hey-test -n servicemesh --timeout=30s
+kubectl exec -n servicemesh hey-test -- hey -z 60s -c 5 -m POST "http://pedidos-service/orders?user_id=1&product_id=1"
+```
+
+En Kiali: **Graph** → namespace **servicemesh**, con el rango de tiempo ajustado a "Last 5m" o
+más. Deberías ver el grafo completo: `hey-test → pedidos-service → pedidos v1`, ramificándose
+hacia `usuarios-service` (con `v1`/`v2` visibles como el split del canary) y hacia
+`productos-service → productos v1`.
+
+## 13. Estado del proyecto
+
+Las 7 fases de la guía están completas y verificadas: servicios-base, mTLS, traffic routing,
+canary, circuit breaker y Kiali. Ver `docs/manual-tecnico.md` §7 para el detalle de qué quedó
+fuera de alcance (no hay Ingress Gateway configurado — todas las pruebas se hicieron desde
+dentro del mesh).

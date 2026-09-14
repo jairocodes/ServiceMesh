@@ -261,10 +261,34 @@ similares), para reducir el overhead de memoria/cardinalidad. Revertir esto requ
 de comportamiento (latencia y timeouts bajo carga, ver §6.6) fue suficiente para dar por
 verificada la fase sin ese contador específico.
 
-## 7. Estado actual (última actualización: fase circuit-breaker)
+### Fase Kiali — Visualización del mesh
+- No requirió ningún manifiesto nuevo: Kiali ya estaba instalado desde la Fase 1 (parte de
+  `istio-1.20.0/samples/addons/`).
+- `istioctl dashboard kiali` levanta un port-forward local y abre el navegador en
+  `http://localhost:20001`. Es un proceso en primer plano — hace falta una segunda terminal
+  para generar tráfico mientras el dashboard está abierto.
+- El grafo de Kiali (`Graph` → namespace `servicemesh`) no muestra tráfico "en vivo" retroactivo
+  — el selector de rango de tiempo (por defecto "Last 1m") tiene que cubrir el momento exacto
+  en que se generó carga, o el grafo aparece con los nodos pero sin ninguna arista (conexión)
+  entre ellos, dando la falsa impresión de que no hay comunicación.
+- Verificación real (visual, no scriptable): con tráfico generado en el momento correcto, el
+  grafo mostró el flujo completo `hey-test → pedidos-service → pedidos v1`, ramificándose hacia
+  `usuarios-service` (con el split canary v1/v2 visible como dos nodos dentro del mismo grupo
+  de aplicación) y hacia `productos-service → productos v1` — las 7 fases del proyecto
+  funcionando juntas, visibles en un solo grafo.
 
-- Completadas y verificadas funcionando: servicios-base, mTLS estricto, traffic routing,
-  canary deployment (90/10), circuit breaker (connectionPool + outlierDetection).
-- Pendiente: Kiali dashboard (Fase 7, la última).
-- Herramienta `hey` instalada (vía Go) y empaquetada como imagen propia en `hey-image/` para
-  uso dentro del mesh (ver §5, fase circuit-breaker, y §6.6).
+## 7. Estado del proyecto: completo (7/7 fases)
+
+Todas las fases de la guía (`guia-servicemesh-istio-k8s.html`) están implementadas y
+verificadas funcionando de extremo a extremo: servicios-base, mTLS estricto, traffic routing,
+canary deployment (90/10), circuit breaker (connectionPool + outlierDetection), y Kiali.
+
+**Herramientas instaladas a lo largo del proyecto:** `istioctl` 1.20.0, `hey` (vía Go, más una
+imagen Docker propia en `hey-image/` para poder usarlo dentro del mesh sin un Ingress
+Gateway), `git-filter-repo` (para el incidente del §6.2).
+
+**No implementado (fuera del alcance original de la guía):** un `Gateway`/`VirtualService`
+de Istio para exponer los servicios externamente vía el Ingress Gateway — todas las pruebas de
+este proyecto se hicieron desde pods de prueba dentro del propio namespace `servicemesh`, lo
+cual fue suficiente para verificar cada fase pero significa que el sistema no es accesible
+desde fuera del cluster tal como quedó.
